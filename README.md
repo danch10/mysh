@@ -9,8 +9,7 @@ how operating systems create and manage processes.
 - Splits each command into a program name and its arguments
 - Runs programs (`ls`, `echo`, `ps`, ...) as new processes
 - Reports errors for unknown commands
-- Built-in `exit` command; exits cleanly on Ctrl+D
-
+- - Built-in commands: `cd` (with home-folder default), `help`, and `exit`; exits cleanly on Ctrl+D
 ## How it works
 
 For every command, the shell uses three Linux system calls:
@@ -39,7 +38,7 @@ mysh> exit
 ## Roadmap
 
 - [x] Read, parse, and run commands (fork / exec / wait)
-- [ ] Built-in commands: `cd`, `help`
+- [x] Built-in commands: `cd`, `help`
 - [ ] Output redirection (`>`)
 - [ ] Pipes (`|`)
 - [ ] Signal handling and background jobs
