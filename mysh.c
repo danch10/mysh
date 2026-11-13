@@ -26,6 +26,7 @@ enum builtin
 
 //----------------------functions-------------------//
 
+void shell_loop(void);
 enum builtin find_builtin(const char *name);
 int parse_line(char *line, char **args);
 void builtin_cd(char **args);
@@ -38,7 +39,13 @@ void run_command(char **args);
  * Returns an exit code to the operating system: 0 = success. */
 int main(void)
 {
+    shell_loop();
+    return 0;
+}
+//-----------------------------------------------------------//
 
+void shell_loop(void){
+    
     char line[MAX_LINE];  /* Memory reserved for the line the user types (up to 1024 chars). */
     char *args[MAX_ARGS]; /* An array of pointers. Each element will point to the
                            * start of one word inside 'line'. No text is copied. */
@@ -89,8 +96,8 @@ int main(void)
 
         run_command(args);
     }
-    return 0;
 }
+
 //-----------------------------------------------------------//
 
 int parse_line(char *line, char **args)
