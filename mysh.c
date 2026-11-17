@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 
 //----------------------constants-------------------//
@@ -26,7 +27,8 @@ enum builtin
 
 //----------------------functions-------------------//
 
-void shell_loop(void);
+int shell_loop(void);
+int find_redirect(char **args);
 enum builtin find_builtin(const char *name);
 int parse_line(char *line, char **args);
 void builtin_cd(char **args);
@@ -39,12 +41,11 @@ void run_command(char **args);
  * Returns an exit code to the operating system: 0 = success. */
 int main(void)
 {
-    shell_loop();
-    return 0;
+    return shell_loop();
 }
 //-----------------------------------------------------------//
 
-void shell_loop(void){
+int shell_loop(void){
     
     char line[MAX_LINE];  /* Memory reserved for the line the user types (up to 1024 chars). */
     char *args[MAX_ARGS]; /* An array of pointers. Each element will point to the
@@ -96,6 +97,25 @@ void shell_loop(void){
 
         run_command(args);
     }
+    return 0;
+}
+
+//-----------------------------------------------------------//
+
+/*
+ * find_redirect - look for ">" in the argument list.
+ * Returns the position of ">" in args, or -1 if there is none.
+ */
+
+int find_redirect(char **args){
+
+    for(int i = 0 ; args[i] != NULL ; i++){
+
+        if( strcmp(args[i], ">") == 0){
+            return i;
+        }
+    }
+    return -1;
 }
 
 //-----------------------------------------------------------//
@@ -173,6 +193,19 @@ void builtin_help(void)
 
 void run_command(char **args)
 {
+
+    char *outfile = NULL;
+    int pos = find_redirect(args);
+
+    if (pos != -1) {
+        outfile = args[pos + 1];
+        if (outfile == NULL) {
+            fprintf(stderr, "mysh: syntax error: expected a file name after '>'\n");
+            return;
+        }
+        args[pos] = NULL;
+    }
+
     /* Ask the kernel to clone this process.
      * pid_t is the data type used for process IDs. */
     pid_t pid = fork();
@@ -185,6 +218,15 @@ void run_command(char **args)
     }
     else if (pid == 0)
     {
+        if (outfile != NULL) {
+        int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("mysh");
+            exit(1);
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+        }
         /* ===== CHILD PROCESS ===== (fork returned 0)
          * Replace this process's code with the requested program.
          * args[0] is the program name, args is the full argument list. */
