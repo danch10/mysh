@@ -5,6 +5,7 @@
 //----------------------includes-------------------//
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -28,7 +29,6 @@ enum builtin
 //----------------------functions-------------------//
 
 int shell_loop(void);
-int find_redirect(char **args);
 enum builtin find_builtin(const char *name);
 int parse_line(char *line, char **args);
 void builtin_cd(char **args);
@@ -45,8 +45,9 @@ int main(void)
 }
 //-----------------------------------------------------------//
 
-int shell_loop(void){
-    
+int shell_loop(void)
+{
+
     char line[MAX_LINE];  /* Memory reserved for the line the user types (up to 1024 chars). */
     char *args[MAX_ARGS]; /* An array of pointers. Each element will point to the
                            * start of one word inside 'line'. No text is copied. */
@@ -98,24 +99,6 @@ int shell_loop(void){
         run_command(args);
     }
     return 0;
-}
-
-//-----------------------------------------------------------//
-
-/*
- * find_redirect - look for ">" in the argument list.
- * Returns the position of ">" in args, or -1 if there is none.
- */
-
-int find_redirect(char **args){
-
-    for(int i = 0 ; args[i] != NULL ; i++){
-
-        if( strcmp(args[i], ">") == 0){
-            return i;
-        }
-    }
-    return -1;
 }
 
 //-----------------------------------------------------------//
@@ -194,16 +177,45 @@ void builtin_help(void)
 void run_command(char **args)
 {
 
+    char *infile = NULL;
     char *outfile = NULL;
-    int pos = find_redirect(args);
+    bool append = false;
+    int j = 0;
 
-    if (pos != -1) {
-        outfile = args[pos + 1];
-        if (outfile == NULL) {
-            fprintf(stderr, "mysh: syntax error: expected a file name after '>'\n");
-            return;
+    for (int i = 0; args[i] != NULL; i++)
+    {
+
+        if ((strcmp(args[i], ">") == 0) || (strcmp(args[i], ">>") == 0) || (strcmp(args[i], "<") == 0))
+        {
+
+            if (args[i + 1] == NULL)
+            {
+                fprintf(stderr, "mysh: syntax error: expected a file name after '%s'\n", args[i]);
+                return;
+            }
+
+            if (strcmp(args[i], "<") == 0)
+            {
+                infile = args[i + 1];
+            }
+            else
+            {
+                outfile = args[i + 1];
+                append = (strcmp(args[i], ">>") == 0);
+            }
+            i++;
         }
-        args[pos] = NULL;
+        else
+        {
+            args[j] = args[i];
+            j++;
+        }
+    }
+    args[j] = NULL;
+    if (j == 0)
+    {
+        fprintf(stderr, "mysh: syntax error: no command\n");
+        return;
     }
 
     /* Ask the kernel to clone this process.
@@ -218,14 +230,28 @@ void run_command(char **args)
     }
     else if (pid == 0)
     {
-        if (outfile != NULL) {
-        int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd < 0) {
-            perror("mysh");
-            exit(1);
+        if (outfile != NULL)
+        {
+            int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+            int ofd = open(outfile, flags, 0644);
+            if (ofd < 0)
+            {
+                perror("mysh");
+                exit(1);
+            }
+            dup2(ofd, STDOUT_FILENO);
+            close(ofd);
         }
-        dup2(fd, STDOUT_FILENO);
-        close(fd);
+        if (infile != NULL)
+        {
+            int ifd = open(infile, O_RDONLY);
+            if (ifd < 0)
+            {
+                perror("mysh");
+                exit(1);
+            }
+            dup2(ifd, STDIN_FILENO);
+            close(ifd);
         }
         /* ===== CHILD PROCESS ===== (fork returned 0)
          * Replace this process's code with the requested program.
