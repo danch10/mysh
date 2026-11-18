@@ -5,8 +5,10 @@
 //----------------------includes-------------------//
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 
 //----------------------constants-------------------//
@@ -26,6 +28,7 @@ enum builtin
 
 //----------------------functions-------------------//
 
+int shell_loop(void);
 enum builtin find_builtin(const char *name);
 int parse_line(char *line, char **args);
 void builtin_cd(char **args);
@@ -37,6 +40,12 @@ void run_command(char **args);
 /* Program entry point. Every C program starts running here.
  * Returns an exit code to the operating system: 0 = success. */
 int main(void)
+{
+    return shell_loop();
+}
+//-----------------------------------------------------------//
+
+int shell_loop(void)
 {
 
     char line[MAX_LINE];  /* Memory reserved for the line the user types (up to 1024 chars). */
@@ -91,6 +100,7 @@ int main(void)
     }
     return 0;
 }
+
 //-----------------------------------------------------------//
 
 int parse_line(char *line, char **args)
@@ -166,6 +176,48 @@ void builtin_help(void)
 
 void run_command(char **args)
 {
+
+    char *infile = NULL;
+    char *outfile = NULL;
+    bool append = false;
+    int j = 0;
+
+    for (int i = 0; args[i] != NULL; i++)
+    {
+
+        if ((strcmp(args[i], ">") == 0) || (strcmp(args[i], ">>") == 0) || (strcmp(args[i], "<") == 0))
+        {
+
+            if (args[i + 1] == NULL)
+            {
+                fprintf(stderr, "mysh: syntax error: expected a file name after '%s'\n", args[i]);
+                return;
+            }
+
+            if (strcmp(args[i], "<") == 0)
+            {
+                infile = args[i + 1];
+            }
+            else
+            {
+                outfile = args[i + 1];
+                append = (strcmp(args[i], ">>") == 0);
+            }
+            i++;
+        }
+        else
+        {
+            args[j] = args[i];
+            j++;
+        }
+    }
+    args[j] = NULL;
+    if (j == 0)
+    {
+        fprintf(stderr, "mysh: syntax error: no command\n");
+        return;
+    }
+
     /* Ask the kernel to clone this process.
      * pid_t is the data type used for process IDs. */
     pid_t pid = fork();
@@ -178,6 +230,29 @@ void run_command(char **args)
     }
     else if (pid == 0)
     {
+        if (outfile != NULL)
+        {
+            int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+            int ofd = open(outfile, flags, 0644);
+            if (ofd < 0)
+            {
+                perror("mysh");
+                exit(1);
+            }
+            dup2(ofd, STDOUT_FILENO);
+            close(ofd);
+        }
+        if (infile != NULL)
+        {
+            int ifd = open(infile, O_RDONLY);
+            if (ifd < 0)
+            {
+                perror("mysh");
+                exit(1);
+            }
+            dup2(ifd, STDIN_FILENO);
+            close(ifd);
+        }
         /* ===== CHILD PROCESS ===== (fork returned 0)
          * Replace this process's code with the requested program.
          * args[0] is the program name, args is the full argument list. */
