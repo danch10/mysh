@@ -34,6 +34,7 @@ int parse_line(char *line, char **args);
 void builtin_cd(char **args);
 void builtin_help(void);
 void run_command(char **args);
+void applay_redirections(char **args);
 
 //------------------------------main-------------------------//
 
@@ -177,6 +178,58 @@ void builtin_help(void)
 void run_command(char **args)
 {
 
+    /* Ask the kernel to clone this process.
+     * pid_t is the data type used for process IDs. */
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        /* fork failed (rare: e.g. the system has too many processes).
+         * perror prints our message plus the reason from the OS. */
+        perror("fork");
+    }
+    else if (pid == 0)
+    {
+        /* ===== CHILD PROCESS ===== (fork returned 0)
+         * Replace this process's code with the requested program.
+         * args[0] is the program name, args is the full argument list. */
+
+        /* Handle <, >, >> : clean the argument list and rewire fd 0 / fd 1. */
+        applay_redirections(args);
+
+        /* Replace this process's code with the requested program. */
+        execvp(args[0], args);
+
+        /* We only get here if execvp FAILED
+         * (for example, the command does not exist). */
+        perror("mysh");
+
+        /* The child must exit now. Otherwise it would continue
+         * running the shell loop, and we'd have two shells! */
+        exit(1);
+    }
+    else
+    {
+        /* ===== PARENT PROCESS ===== (fork returned the child's PID)
+         * Wait until that specific child finishes.
+         * NULL = we don't need its exit status yet.
+         * 0    = no special options. */
+        waitpid(pid, NULL, 0);
+    }
+}
+
+//---------------------------------------------------------------//
+
+/*
+ * apply_redirections - runs in the CHILD, before execvp.
+ * Finds <, >, >> in args, removes them (and their file names)
+ * from the list, and rewires fd 0 / fd 1 to the files.
+ * On any error, prints a message and exits the child.
+ */
+
+void applay_redirections(char **args)
+{
+
     char *infile = NULL;
     char *outfile = NULL;
     bool append = false;
@@ -191,7 +244,7 @@ void run_command(char **args)
             if (args[i + 1] == NULL)
             {
                 fprintf(stderr, "mysh: syntax error: expected a file name after '%s'\n", args[i]);
-                return;
+                exit(1);
             }
 
             if (strcmp(args[i], "<") == 0)
@@ -215,63 +268,30 @@ void run_command(char **args)
     if (j == 0)
     {
         fprintf(stderr, "mysh: syntax error: no command\n");
-        return;
-    }
-
-    /* Ask the kernel to clone this process.
-     * pid_t is the data type used for process IDs. */
-    pid_t pid = fork();
-
-    if (pid < 0)
-    {
-        /* fork failed (rare: e.g. the system has too many processes).
-         * perror prints our message plus the reason from the OS. */
-        perror("fork");
-    }
-    else if (pid == 0)
-    {
-        if (outfile != NULL)
-        {
-            int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
-            int ofd = open(outfile, flags, 0644);
-            if (ofd < 0)
-            {
-                perror("mysh");
-                exit(1);
-            }
-            dup2(ofd, STDOUT_FILENO);
-            close(ofd);
-        }
-        if (infile != NULL)
-        {
-            int ifd = open(infile, O_RDONLY);
-            if (ifd < 0)
-            {
-                perror("mysh");
-                exit(1);
-            }
-            dup2(ifd, STDIN_FILENO);
-            close(ifd);
-        }
-        /* ===== CHILD PROCESS ===== (fork returned 0)
-         * Replace this process's code with the requested program.
-         * args[0] is the program name, args is the full argument list. */
-        execvp(args[0], args);
-
-        /* We only get here if execvp FAILED
-         * (for example, the command does not exist). */
-        perror("mysh");
-
-        /* The child must exit now. Otherwise it would continue
-         * running the shell loop, and we'd have two shells! */
         exit(1);
     }
-    else
+
+    if (outfile != NULL)
     {
-        /* ===== PARENT PROCESS ===== (fork returned the child's PID)
-         * Wait until that specific child finishes.
-         * NULL = we don't need its exit status yet.
-         * 0    = no special options. */
-        waitpid(pid, NULL, 0);
+        int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+        int ofd = open(outfile, flags, 0644);
+        if (ofd < 0)
+        {
+            perror("mysh");
+            exit(1);
+        }
+        dup2(ofd, STDOUT_FILENO);
+        close(ofd);
+    }
+    if (infile != NULL)
+    {
+        int ifd = open(infile, O_RDONLY);
+        if (ifd < 0)
+        {
+            perror("mysh");
+            exit(1);
+        }
+        dup2(ifd, STDIN_FILENO);
+        close(ifd);
     }
 }
