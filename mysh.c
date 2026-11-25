@@ -10,11 +10,14 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 //----------------------constants-------------------//
 
 #define MAX_LINE 1024 /* Maximum length of one input line, in characters.*/
 #define MAX_ARGS 64   /* Maximum number of words in one command */
+
+volatile sig_atomic_t at_prompt = 0;
 
 //----------------------enum------------------------//
 
@@ -29,6 +32,7 @@ enum builtin
 //----------------------functions-------------------//
 
 int shell_loop(void);
+void handle_signal(int sig);
 enum builtin find_builtin(const char *name);
 int parse_line(char *line, char **args);
 void builtin_cd(char **args);
@@ -43,6 +47,8 @@ int split_pipeline(char **args, char **cmds[]);
  * Returns an exit code to the operating system: 0 = success. */
 int main(void)
 {
+    signal(SIGINT, handle_signal);
+    signal(SIGQUIT, handle_signal);
     return shell_loop();
 }
 //-----------------------------------------------------------//
@@ -67,6 +73,8 @@ int shell_loop(void)
          * force it out immediately. */
         fflush(stdout);
 
+        at_prompt = 1;
+
         /* Read one line from standard input into 'line'.
          * sizeof(line) limits how much we read, so a very long line
          * can never overflow our memory (an important safety habit in C).
@@ -77,6 +85,8 @@ int shell_loop(void)
             printf("\n");
             break;
         }
+
+        at_prompt = 0;
 
         /* If the user just pressed Enter, there are no words. Show a new prompt. */
         if (parse_line(line, args) == 0)
@@ -101,6 +111,24 @@ int shell_loop(void)
         run_command(args);
     }
     return 0;
+}
+
+//-----------------------------------------------------------//
+
+void handle_signal(int sig)
+{
+    switch (sig)
+    {
+    case SIGINT:
+        if (at_prompt)
+        {
+            write(STDOUT_FILENO, "\nmysh> ", 7);
+        }
+        break;
+
+    case SIGQUIT:
+        break;    
+    }
 }
 
 //-----------------------------------------------------------//
@@ -202,23 +230,27 @@ void builtin_help(void)
  */
 void run_command(char **args)
 {
-    char **commands[MAX_ARGS];  /* start of each section's word list */
-    pid_t pids[MAX_ARGS];       /* PID of each child, for waiting */
+    char **commands[MAX_ARGS]; /* start of each section's word list */
+    pid_t pids[MAX_ARGS];      /* PID of each child, for waiting */
 
     /* Split at "|". Returns the number of sections, or -1 on a syntax
      * error (already reported), e.g. "ls |" or "| ls". */
     int num_of_commands = split_pipeline(args, commands);
+    int status = 0;
+
+    bool child_killed = false;
+
     if (num_of_commands < 0)
     {
         return;
     }
 
-    int prev_read = -1;         /* read end of the previous pipe; -1 = none */
-    int started = 0;            /* CHANGE: children actually created */
+    int prev_read = -1; /* read end of the previous pipe; -1 = none */
+    int started = 0;    /* CHANGE: children actually created */
 
     for (int i = 0; i < num_of_commands; i++)
     {
-        int fds[2];             /* new pipe: fds[0] = read end, fds[1] = write end */
+        int fds[2]; /* new pipe: fds[0] = read end, fds[1] = write end */
 
         /* The last section writes to the screen (or its own "> file"),
          * so it is the only one that needs no pipe after it. */
@@ -249,19 +281,24 @@ void run_command(char **args)
         {
             /* ===== CHILD: runs section i ===== */
 
+
+            /* Children react to Ctrl+C and Ctrl+\ normally; only the shell ignores them. */
+            signal(SIGINT, SIG_DFL);
+            signal(SIGQUIT, SIG_DFL);
+
             /* Pipe before me: read from it instead of the keyboard. */
             if (prev_read != -1)
             {
                 dup2(prev_read, STDIN_FILENO);
-                close(prev_read);       /* fd 0 now covers it */
+                close(prev_read); /* fd 0 now covers it */
             }
 
             /* Pipe after me: write into it instead of the screen. */
             if (!is_last)
             {
                 dup2(fds[1], STDOUT_FILENO);
-                close(fds[0]);          /* belongs to the next child */
-                close(fds[1]);          /* fd 1 now covers it */
+                close(fds[0]); /* belongs to the next child */
+                close(fds[1]); /* fd 1 now covers it */
             }
 
             /* File redirections come after the pipes, so a "> file"
@@ -271,12 +308,12 @@ void run_command(char **args)
             /* Become the requested program. Only returns on failure. */
             execvp(commands[i][0], commands[i]);
             perror("mysh");
-            exit(1);                    /* never fall back into the shell loop */
+            exit(1); /* never fall back into the shell loop */
         }
 
         /* ===== PARENT ===== */
 
-        pids[started] = pid;            /* CHANGE: was pids[i] */
+        pids[started] = pid; /* CHANGE: was pids[i] */
         started++;
 
         /* The child has its own copy of the old read end: close ours. */
@@ -303,7 +340,13 @@ void run_command(char **args)
     /* All children run at the same time; now wait for every one. */
     for (int j = 0; j < started; j++)
     {
-        waitpid(pids[j], NULL, 0);
+        waitpid(pids[j], &status, 0);
+
+        if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGINT) && !child_killed)
+        {
+            child_killed = true;
+            printf("\n");
+        }
     }
 }
 

@@ -71,6 +71,23 @@ child, and all children run **at the same time**:
 File redirections are applied after the pipes, so `>` overrides a pipe,
 as in bash.
 
+### Signals: Ctrl+C and Ctrl+\
+Pressing Ctrl+C makes the kernel send `SIGINT` to every process in the
+foreground, including the shell itself. By default, that would kill the shell.
+
+- The shell installs a **signal handler** for `SIGINT` and `SIGQUIT` (Ctrl+\).
+  At the prompt, Ctrl+C prints a fresh prompt; at any other time, the
+  shell simply survives.
+- A global flag (`volatile sig_atomic_t at_prompt`) tells the handler
+  whether the shell is waiting for input. This type is safe to share
+  between normal code and a signal handler.
+- Inside the handler, only `write()` is used, because `printf()` is not
+  safe to call from a signal handler.
+- Each child resets both signals to their default behavior before
+  `execvp()`, so Ctrl+C stops the running program as expected.
+- When a child is killed by Ctrl+C, the shell detects it with
+  `WIFSIGNALED()` / `WTERMSIG()` and moves the prompt to a new line.
+
 ## Code structure
 
 | Function | Purpose |
@@ -82,6 +99,7 @@ as in bash.
 | `split_pipeline()` | Splits the words into sections at each `\|` |
 | `run_command()` | Creates the pipes and children for each section, then waits |
 | `apply_redirections()` | Runs in each child: handles `<`, `>`, `>>` |
+| `handle_signal()` | Signal handler: fresh prompt on Ctrl+C, ignores Ctrl+\ in the shell |
 
 ## Build and run
 
@@ -98,7 +116,8 @@ gcc -Wall -o mysh mysh.c
 - [x] Built-in commands: `cd`, `help`, `exit`
 - [x] I/O redirection: `<`, `>`, `>>`
 - [x] Pipelines with any number of commands
-- [ ] Signal handling (Ctrl+C) and background jobs (`&`)
+- [x] Signal handling (Ctrl+C)
+- [ ] background jobs (`&`)
 - [ ] Command history
 
 ## Known limitations
@@ -117,3 +136,4 @@ gcc -Wall -o mysh mysh.c
 - Running several processes at the same time and waiting for all of them
 - Safe string handling in C: buffer limits, `strtok`, and NULL-terminated lists
 - Structuring C code into small, single-purpose functions
+- How signals work, how to write a safe signal handler, and how children reset signals before `exec`
