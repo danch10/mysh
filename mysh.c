@@ -34,7 +34,8 @@ int parse_line(char *line, char **args);
 void builtin_cd(char **args);
 void builtin_help(void);
 void run_command(char **args);
-void applay_redirections(char **args);
+void apply_redirections(char **args);
+int split_pipeline(char **args, char **cmds[]);
 
 //------------------------------main-------------------------//
 
@@ -175,46 +176,134 @@ void builtin_help(void)
 
 //-----------------------------------------------------------//
 
+/*
+ * run_command - run one external command, or a pipeline of commands.
+ *
+ * Examples:
+ *   "ls -la"                 -> 1 section, no pipes
+ *   "ls | grep txt"          -> 2 sections, 1 pipe
+ *   "a < in | b | c > out"   -> 3 sections, 2 pipes, plus file redirections
+ *
+ * How it works:
+ *   1. split_pipeline() cuts args into sections at each "|".
+ *   2. Each section runs in its own child process. All children run
+ *      at the same time, connected by pipes.
+ *   3. Pipes are created one at a time ("rolling"): the parent only
+ *      carries the read end of the previous pipe (prev_read) to the
+ *      next child.
+ *   4. After all children are started, the parent waits for each one.
+ *
+ * File descriptor rules:
+ *   - A child copies the pipe ends it needs onto fd 0 / fd 1 with
+ *     dup2(), then closes every original pipe descriptor.
+ *   - The parent closes its copies right after each fork. If any write
+ *     end stayed open, the next reader would never see end-of-file,
+ *     and the shell would hang.
+ */
 void run_command(char **args)
 {
+    char **commands[MAX_ARGS];  /* start of each section's word list */
+    pid_t pids[MAX_ARGS];       /* PID of each child, for waiting */
 
-    /* Ask the kernel to clone this process.
-     * pid_t is the data type used for process IDs. */
-    pid_t pid = fork();
-
-    if (pid < 0)
+    /* Split at "|". Returns the number of sections, or -1 on a syntax
+     * error (already reported), e.g. "ls |" or "| ls". */
+    int num_of_commands = split_pipeline(args, commands);
+    if (num_of_commands < 0)
     {
-        /* fork failed (rare: e.g. the system has too many processes).
-         * perror prints our message plus the reason from the OS. */
-        perror("fork");
+        return;
     }
-    else if (pid == 0)
+
+    int prev_read = -1;         /* read end of the previous pipe; -1 = none */
+    int started = 0;            /* CHANGE: children actually created */
+
+    for (int i = 0; i < num_of_commands; i++)
     {
-        /* ===== CHILD PROCESS ===== (fork returned 0)
-         * Replace this process's code with the requested program.
-         * args[0] is the program name, args is the full argument list. */
+        int fds[2];             /* new pipe: fds[0] = read end, fds[1] = write end */
 
-        /* Handle <, >, >> : clean the argument list and rewire fd 0 / fd 1. */
-        applay_redirections(args);
+        /* The last section writes to the screen (or its own "> file"),
+         * so it is the only one that needs no pipe after it. */
+        bool is_last = (i == num_of_commands - 1);
 
-        /* Replace this process's code with the requested program. */
-        execvp(args[0], args);
+        /* Create the pipe that connects this section to the next one.
+         * Thanks to &&, pipe() is only called when this is not the last. */
+        if (!is_last && pipe(fds) < 0)
+        {
+            perror("pipe");
+            break;
+        }
 
-        /* We only get here if execvp FAILED
-         * (for example, the command does not exist). */
-        perror("mysh");
+        pid_t pid = fork();
 
-        /* The child must exit now. Otherwise it would continue
-         * running the shell loop, and we'd have two shells! */
-        exit(1);
+        if (pid < 0)
+        {
+            /* fork failed: release the pipe made for this round, stop. */
+            perror("fork");
+            if (!is_last)
+            {
+                close(fds[0]);
+                close(fds[1]);
+            }
+            break;
+        }
+        else if (pid == 0)
+        {
+            /* ===== CHILD: runs section i ===== */
+
+            /* Pipe before me: read from it instead of the keyboard. */
+            if (prev_read != -1)
+            {
+                dup2(prev_read, STDIN_FILENO);
+                close(prev_read);       /* fd 0 now covers it */
+            }
+
+            /* Pipe after me: write into it instead of the screen. */
+            if (!is_last)
+            {
+                dup2(fds[1], STDOUT_FILENO);
+                close(fds[0]);          /* belongs to the next child */
+                close(fds[1]);          /* fd 1 now covers it */
+            }
+
+            /* File redirections come after the pipes, so a "> file"
+             * overrides the pipe, just like in bash. */
+            apply_redirections(commands[i]);
+
+            /* Become the requested program. Only returns on failure. */
+            execvp(commands[i][0], commands[i]);
+            perror("mysh");
+            exit(1);                    /* never fall back into the shell loop */
+        }
+
+        /* ===== PARENT ===== */
+
+        pids[started] = pid;            /* CHANGE: was pids[i] */
+        started++;
+
+        /* The child has its own copy of the old read end: close ours. */
+        if (prev_read != -1)
+        {
+            close(prev_read);
+        }
+
+        /* Keep only the new read end, for the next child. Closing the
+         * write end here is essential, or the reader never sees EOF. */
+        if (!is_last)
+        {
+            close(fds[1]);
+            prev_read = fds[0];
+        }
     }
-    else
+
+    /* CHANGE: if we stopped early, a read end may still be open. */
+    if (prev_read != -1)
     {
-        /* ===== PARENT PROCESS ===== (fork returned the child's PID)
-         * Wait until that specific child finishes.
-         * NULL = we don't need its exit status yet.
-         * 0    = no special options. */
-        waitpid(pid, NULL, 0);
+        close(prev_read);
+    }
+
+    /* All children run at the same time; now wait for every one. */
+    for (int j = 0; j < started; j++)
+    {
+        waitpid(pids[j], NULL, 0);
     }
 }
 
@@ -227,7 +316,7 @@ void run_command(char **args)
  * On any error, prints a message and exits the child.
  */
 
-void applay_redirections(char **args)
+void apply_redirections(char **args)
 {
 
     char *infile = NULL;
@@ -294,4 +383,42 @@ void applay_redirections(char **args)
         dup2(ifd, STDIN_FILENO);
         close(ifd);
     }
+}
+
+//----------------------------------------------------------//
+/*
+ * split_pipeline - split args into sections at each "|".
+ * Each "|" is replaced with NULL, so every section becomes its own
+ * NULL-terminated word list. cmds[k] points to the start of section k.
+ * Runs in the PARENT: on a syntax error it prints a message and returns -1.
+ * Returns the number of sections (1 if there are no pipes).
+ */
+
+int split_pipeline(char **args, char **cmds[])
+{
+
+    int n = 1;
+
+    cmds[0] = &args[0];
+
+    for (int i = 0; args[i] != NULL; i++)
+    {
+        if (strcmp(args[i], "|") == 0)
+        {
+            args[i] = NULL;
+            cmds[n] = &args[i + 1];
+            n++;
+        }
+    }
+
+    for (int j = 0; j < n; j++)
+    {
+        if (cmds[j][0] == NULL)
+        {
+            fprintf(stderr, "mysh: syntax error near '|' \n");
+            return -1;
+        }
+    }
+
+    return n;
 }
